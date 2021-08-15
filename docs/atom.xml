@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en">
+	<title>doing bad things poorly</title>
+	<link href="https://tny.town/atom.xml" rel="self" type="application/atom+xml"/>
+  <link href="https://tny.town"/>
+	<generator uri="https://www.getzola.org/">Zola</generator>
+	<updated>2021-02-28T00:00:00+00:00</updated>
+	<id>https://tny.town/atom.xml</id>
+	<entry xml:lang="en">
+		<title>syscalling for fun and (no) profit</title>
+		<published>2021-02-28T00:00:00+00:00</published>
+		<updated>2021-02-28T00:00:00+00:00</updated>
+		<link href="https://tny.town/blog/syscalling-for-fun-and-no-profit/" type="text/html"/>
+		<id>https://tny.town/blog/syscalling-for-fun-and-no-profit/</id>
+		<content type="html">&lt;p&gt;I recently had a (self-inflicted) problem in my &lt;a href=&quot;https:&#x2F;&#x2F;www-users.cs.umn.edu&#x2F;%7Ekauffman&#x2F;4061&#x2F;&quot;&gt;Operating Systems course&lt;&#x2F;a&gt;. To expose us to the wonders of programming in a Unix environment, we were tasked with building a rudimentary &amp;quot;shell&amp;quot;. To make the assignment more interesting to my partner and I, we decided to avoid &lt;code&gt;libc&lt;&#x2F;code&gt; and use Linux system calls directly &lt;sup class=&quot;footnote-reference&quot;&gt;&lt;a href=&quot;#1&quot;&gt;1&lt;&#x2F;a&gt;&lt;&#x2F;sup&gt;.&lt;&#x2F;p&gt;
+&lt;span id=&quot;continue-reading&quot;&gt;&lt;&#x2F;span&gt;&lt;h3 id=&quot;wait-what&quot;&gt;wait, what?&lt;&#x2F;h3&gt;
+&lt;p&gt;What does this even entail? On x86-64 Linux, the only platform this assignment needs to run on, it&#x27;s easier than one would expect. Syscalls are distinguished by unique their &lt;em&gt;number&lt;&#x2F;em&gt; and the &lt;em&gt;arguments&lt;&#x2F;em&gt; they take. Linux syscalls are ABI-stable, which means that the behavior of any one syscall number is guaranteed to never change &lt;sup class=&quot;footnote-reference&quot;&gt;&lt;a href=&quot;#2&quot;&gt;2&lt;&#x2F;a&gt;&lt;&#x2F;sup&gt;. To invoke a syscall, one needs to: &lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;store the desired syscall &lt;em&gt;number&lt;&#x2F;em&gt; in &lt;code&gt;rax&lt;&#x2F;code&gt;&lt;&#x2F;li&gt;
+&lt;li&gt;pass a maximum of 6 &lt;em&gt;arguments&lt;&#x2F;em&gt; in registers  &lt;code&gt;rdi&lt;&#x2F;code&gt;, &lt;code&gt;rsi&lt;&#x2F;code&gt;, &lt;code&gt;rdx&lt;&#x2F;code&gt;, &lt;code&gt;r10&lt;&#x2F;code&gt;, &lt;code&gt;r8&lt;&#x2F;code&gt;, and &lt;code&gt;r9&lt;&#x2F;code&gt; &lt;&#x2F;li&gt;
+&lt;li&gt;use the &lt;code&gt;syscall&lt;&#x2F;code&gt; instruction.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;Notice something familiar in step 2? That&#x27;s the &lt;a href=&quot;https:&#x2F;&#x2F;wiki.osdev.org&#x2F;System_V_ABI#Calling_Convention&quot;&gt;System V x86-64 calling convention&lt;&#x2F;a&gt;! We pass arguments into syscalls the same way that we pass arguments into normal function calls. The only difference is that instead of calling the function via the &lt;code&gt;call&lt;&#x2F;code&gt; instruction, we have to denote the syscall number via &lt;code&gt;rax&lt;&#x2F;code&gt; and invoke the syscall with the &lt;code&gt;syscall&lt;&#x2F;code&gt; instruction.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;zero-cost-abstractions&quot;&gt;zero-cost abstractions&lt;&#x2F;h2&gt;
+&lt;p&gt;Manually writing out all the &lt;code&gt;syscall&lt;&#x2F;code&gt; invocations for the syscalls that we needed to use felt a bit tedious. Instead, I decided to write a few functions abstracting over the required inline assembly, with which I generated syscall wrappers.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;a-false-start&quot;&gt;a false start&lt;&#x2F;h3&gt;
+&lt;p&gt;If you can play it slowly, you can play it quickly. I started small by implementing only one wrapper for a syscall with one argument. This was my initial attempt.&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;int64_t &lt;&#x2F;span&gt;&lt;span style=&quot;color:#8fa1b3;&quot;&gt;syscall1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;no&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;a1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;)
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;register &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;int64_t no &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;asm&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;rax&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;);
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;register &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;int64_t a1 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;asm&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;rdi&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;);
+{
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;asm volatile&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;syscall&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot; : &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;+r&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;(no) : &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;r&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;(a1) : &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;rcx&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;, &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;r11&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;, &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;memory&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;);
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;return&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt; no;
+}
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Through previous projects, I learnt about &lt;a href=&quot;https:&#x2F;&#x2F;gcc.gnu.org&#x2F;onlinedocs&#x2F;gcc&#x2F;Local-Register-Variables.html#Local-Register-Variables&quot;&gt;some GCC-specific trickery that allows us to control register allocation&lt;&#x2F;a&gt;. However, I wasn&#x27;t able to declare function arguments as such.&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;static inline &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;int64_t &lt;&#x2F;span&gt;&lt;span style=&quot;color:#8fa1b3;&quot;&gt;syscall1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;register &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;int64_t no &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;asm&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;rax&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;), &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;register &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;int64_t a1 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;asm&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;rdx&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;))
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;The above is apparently NOT syntactically valid. To hack around that, I used &lt;a href=&quot;https:&#x2F;&#x2F;en.wikipedia.org&#x2F;wiki&#x2F;C_(programming_language)#K&amp;amp;R_C&quot;&gt;K&amp;amp;R style function declarations&lt;&#x2F;a&gt;. This compiles, but the &lt;code&gt;no&lt;&#x2F;code&gt; and &lt;code&gt;a1&lt;&#x2F;code&gt; arguments were not assigned to the registers I wanted them to be in.&lt;&#x2F;p&gt;
+&lt;figure&gt;
+  &lt;img src=&quot;Untitled.png&quot;  alt=&quot;screenshot of incorrect disassembly&quot; &gt;
+  &lt;figcaption&gt;WTF?&lt;&#x2F;figcaption&gt;
+&lt;&#x2F;figure&gt;
+&lt;p&gt;Looking back, this result was not a surprise. Being able to control register allocation for function arguments blatantly breaks calling convention and would make things impossible to link. Besides, K&amp;amp;R function declaration syntax is incredibly cursed, not to mention deprecated. The question remains: how should we write these wrappers?&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;the-kosher-way&quot;&gt;the kosher way&lt;&#x2F;h3&gt;
+&lt;p&gt;Trying to be cool and using &lt;em&gt;exotic compiler features&lt;&#x2F;em&gt; netted me a great deal of pain, so I just decided to do it &amp;quot;normally&amp;quot;.&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;int64_t &lt;&#x2F;span&gt;&lt;span style=&quot;color:#8fa1b3;&quot;&gt;syscall1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(int64_t &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;a1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, int64_t &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;no&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;) {
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;asm volatile&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;movq %0, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;%%&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;rax&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n\t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+               &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;syscall&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+               : &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;+g&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;(no) &lt;&#x2F;span&gt;&lt;span style=&quot;color:#65737e;&quot;&gt;&#x2F;&#x2F; r&#x2F;w: syscall number
+               &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;: &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;r&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;(a1)
+               : &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;rcx&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;, &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;r11&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;, &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;memory&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;);
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;return&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt; no;
+}
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;I decided to exploit the inherent similarity between the system call ABI and normal System V function calls. To ensure that the arguments are passed in the correct order, I moved the syscall number &lt;code&gt;no&lt;&#x2F;code&gt; argument to the end. In the event that there are more than 6 arguments in the wrapper &lt;sup class=&quot;footnote-reference&quot;&gt;&lt;a href=&quot;#3&quot;&gt;3&lt;&#x2F;a&gt;&lt;&#x2F;sup&gt;, the &lt;code&gt;no&lt;&#x2F;code&gt; argument overflows into memory. We &lt;code&gt;mov&lt;&#x2F;code&gt; the syscall number into &lt;code&gt;eax&lt;&#x2F;code&gt; where the kernel expects it, and likewise modify the register constraint for &lt;code&gt;no&lt;&#x2F;code&gt; to &lt;code&gt;+g&lt;&#x2F;code&gt; to reflect the possibility of it not being a register.&lt;&#x2F;p&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tny.town&#x2F;blog&#x2F;syscalling-for-fun-and-no-profit&#x2F;Untitled%201.png&quot; alt=&quot;screenshot of correct disassembly&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;As you can see, this one seemed to generate valid code. I then wrote &lt;code&gt;syscall2&lt;&#x2F;code&gt; through &lt;code&gt;syscall6&lt;&#x2F;code&gt; with the same pattern, then got to work on generating the real syscall wrappers.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;generating-the-syscall-wrappers&quot;&gt;generating the syscall wrappers&lt;&#x2F;h2&gt;
+&lt;p&gt;Believe it or not, there is no central location which contains definitions for all the syscalls. Canonically, it is libc&#x27;s responsibility to provide those wrappers. Their prototypes are split up across various arbitrarily named header files, with arguments and constants for those further split up into other header files. The best place to find prototypes and headers lies within the manpages, specifically section 2. Our task now is to parse those manpages and turn them into syscall definitions utilizing our assembly wrappers.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;into-the-belly-of-the-beast&quot;&gt;into the belly of the beast&lt;&#x2F;h3&gt;
+&lt;p&gt;The Linux manpages are generated with &lt;code&gt;groff&lt;&#x2F;code&gt;, an archaic typesetter. Optimally, we want to &amp;quot;parse&amp;quot; the original &lt;code&gt;groff&lt;&#x2F;code&gt; markup to get the data we need. Fortunately, &lt;code&gt;man&lt;&#x2F;code&gt; provides a mechanism to get the path of the markup files from which it displays its output: the &lt;code&gt;-w&lt;&#x2F;code&gt; flag &lt;sup class=&quot;footnote-reference&quot;&gt;&lt;a href=&quot;#4&quot;&gt;4&lt;&#x2F;a&gt;&lt;&#x2F;sup&gt;. Since this provides the path to gzipped markup, I had to &lt;code&gt;zcat&lt;&#x2F;code&gt; it to get the text. This yielded the following for &lt;code&gt;read(2)&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;lt;snip&amp;gt;
+.TH READ 2 2018-02-02 &amp;quot;Linux&amp;quot; &amp;quot;Linux Programmer&amp;#39;s Manual&amp;quot;
+.SH NAME
+read \- read from a file descriptor
+.SH SYNOPSIS
+.nf
+.B #include &amp;lt;unistd.h&amp;gt;
+.PP
+.BI &amp;quot;ssize_t read(int &amp;quot; fd &amp;quot;, void *&amp;quot; buf &amp;quot;, size_t &amp;quot; count );
+.fi
+.SH DESCRIPTION
+.BR read ()
+attempts to read up to
+.I count
+bytes from file descriptor
+.I fd
+into the buffer starting at
+.IR buf .
+.PP
+&amp;lt;snip&amp;gt;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;While archaic and not as nice when compared to asciidoc, this is workable with some judicious &lt;code&gt;sed&lt;&#x2F;code&gt; and my hammer of choice, fish shell.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;sed-to-the-rescue&quot;&gt;&lt;code&gt;sed&lt;&#x2F;code&gt; to the rescue&lt;&#x2F;h3&gt;
+&lt;p&gt;&lt;code&gt;groff&lt;&#x2F;code&gt; seems to have some semblance of structure in the form of sections. We can pinpoint and preprocess specific sections to work on with this &lt;code&gt;sed&lt;&#x2F;code&gt; snippet.&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&#x2F;^\.SH SYNOPSIS&#x2F;,&#x2F;^\.SH.*&#x2F; {
+&#x2F;^\.SH&#x2F;D             # delete section headers
+s&#x2F;&amp;quot;|;&#x2F;&#x2F;g             # delete quotation marks, semis
+s&#x2F;^\.[A-Za-z]+ *&#x2F;&#x2F;g  # delete preceding directives
+s&#x2F;\&#x2F;\*.+\*\&#x2F;&#x2F;&#x2F;g      # delete C89 comments
+p                    # print
+}
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;The function prototypes and &lt;code&gt;#include&lt;&#x2F;code&gt; directives usually reside in the synopsis section, so we match for that with &lt;code&gt;&#x2F;^\.SH SYNOPSIS&#x2F;,&#x2F;^\.SH.*&#x2F;&lt;&#x2F;code&gt;. This matches ranges of lines beginning with a &lt;code&gt;.SH SYNOPSIS&lt;&#x2F;code&gt; and ending with any arbitrary &lt;code&gt;.SH&lt;&#x2F;code&gt; command, which denotes the next header. We specify multiple commands in the body of the sed match to clean up &lt;code&gt;groff&lt;&#x2F;code&gt; markup cruft, leaving only the &lt;code&gt;#include&lt;&#x2F;code&gt; and prototype.&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;#include &amp;lt;unistd.h&amp;gt;
+
+ssize_t read(int  fd , void * buf , size_t  count )
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Now that we have the prototype, the next issue is generating the call to the &lt;code&gt;syscall&lt;&#x2F;code&gt; wrapper. The only real challenge here is extricating the variable names from their types. This is achievable with some &lt;code&gt;grep&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt; echo &amp;#39;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;ssize_t read(int  fd , void * buf , size_t  count )&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;#39; | &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;grep -oE &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;#39;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;[0-9a-zA-Z_]+ *(,|\))&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;#39;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;fd&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt; ,
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;buf&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt; ,
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;count &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;)
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;We still have some spurious tokens in there, but a quick pipe to &lt;code&gt;tr -d &#x27;,)&#x27;&lt;&#x2F;code&gt;  solves that problem. &lt;&#x2F;p&gt;
+&lt;p&gt;One more additional thing of interest is how we get the syscall number. Those are all defined in &lt;code&gt;sys&#x2F;syscall.h&lt;&#x2F;code&gt; as macros, but where that file is located is entirely system-dependent. Luckily, we can make &lt;code&gt;gcc&lt;&#x2F;code&gt; do the work for us. The &lt;code&gt;-E -dM&lt;&#x2F;code&gt; flags, as &lt;a href=&quot;https:&#x2F;&#x2F;stackoverflow.com&#x2F;a&#x2F;2224357&quot;&gt;this StackOverflow answer&lt;&#x2F;a&gt; helpfully points out, dumps a list of all the preprocessor macros that are defined. We can then use &lt;code&gt;sed&lt;&#x2F;code&gt;  with a capture group to grab the number.&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt; echo &amp;#39;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;#include &amp;lt;sys&#x2F;syscall.h&amp;gt;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;#39; | &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;gcc -E -dM -x&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt; c - | &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;sed -En &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;s&#x2F;#define __NR_read +([0-9]+)&#x2F;\1&#x2F;p&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;0
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;With the argument names and syscall number we can munge together a call to the appropriate &lt;code&gt;syscall&lt;&#x2F;code&gt; wrapper in our function declaration (which we derive from the prototype). We can then generate a halfway sane header file &lt;sup class=&quot;footnote-reference&quot;&gt;&lt;a href=&quot;#5&quot;&gt;5&lt;&#x2F;a&gt;&lt;&#x2F;sup&gt;:&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span style=&quot;color:#65737e;&quot;&gt;&#x2F;&#x2F; This file was generated by mklibsysc.
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#ifndef&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt; LIBSYSC_H_
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#define &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;LIBSYSC_H_
+
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#include &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;lt;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;fcntl.h&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#include &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;lt;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;stdint.h&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#include &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;lt;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;unistd.h&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;gt;
+
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#65737e;&quot;&gt;&#x2F;&#x2F; &amp;lt;snip: syscall0 ... syscall6&amp;gt;
+&#x2F;&#x2F;$syscalls=read,write,dup,dup2,exit_group
+
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#define &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;read libsysc_read
+ &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;__attribute__&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;((noinline)) ssize_t &lt;&#x2F;span&gt;&lt;span style=&quot;color:#8fa1b3;&quot;&gt;libsysc_read&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;fd &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;void &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;* &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;buf &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, size_t  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;count &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;) { &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;return &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;syscall3 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;( fd , buf , count , &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;0 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;); }
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#define &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;write libsysc_write
+ &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;__attribute__&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;((noinline)) ssize_t &lt;&#x2F;span&gt;&lt;span style=&quot;color:#8fa1b3;&quot;&gt;libsysc_write&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;fd &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;const void &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;* &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;buf &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, size_t  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;count &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;) { &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;return &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;syscall3 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;( fd , buf , count , &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;1 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;); }
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#define &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;dup libsysc_dup
+ &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;__attribute__&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;((noinline)) &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int &lt;&#x2F;span&gt;&lt;span style=&quot;color:#8fa1b3;&quot;&gt;libsysc_dup&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;oldfd &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;) { &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;return &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;syscall1 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;( oldfd , &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;32 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;); }
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#define &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;dup2 libsysc_dup2
+ &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;__attribute__&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;((noinline)) &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int &lt;&#x2F;span&gt;&lt;span style=&quot;color:#8fa1b3;&quot;&gt;libsysc_dup2&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;oldfd &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;newfd &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;) { &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;return &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;syscall2 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;( oldfd , newfd , &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;33 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;); }
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#define &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;exit_group libsysc_exit_group
+ &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;__attribute__&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;((noinline)) &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;void &lt;&#x2F;span&gt;&lt;span style=&quot;color:#8fa1b3;&quot;&gt;libsysc_exit_group&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;status &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;) { &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;syscall1 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;( status , &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;231 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;); }
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#endif &lt;&#x2F;span&gt;&lt;span style=&quot;color:#65737e;&quot;&gt;&#x2F;&#x2F; LIBSYSC_H_
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;This looks a bit ugly, but &lt;code&gt;clang-format&lt;&#x2F;code&gt; can fix it. Regardless, not bad for a shell script and some regex.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;trying-it-out&quot;&gt;trying it out&lt;&#x2F;h2&gt;
+&lt;p&gt;Now that we have all these syscall wrappers, it&#x27;s time to write a program to test a few of them.&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;#include &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;libsysc.h&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;asm&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;.global _start&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n\t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+    &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;_start:&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n\t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+    &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;mov (%rsp), &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;%e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;di&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n\t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+    &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;leaq 8(%rsp), %rsi&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n\t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+    &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;call main&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n\t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+    &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;mov $0, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;%e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;di&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n\t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+    &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;call libsysc_exit_group&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n\t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;
+    &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;syscall&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;);
+
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int &lt;&#x2F;span&gt;&lt;span style=&quot;color:#8fa1b3;&quot;&gt;main&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;int &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;argc&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;char &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;*&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;argv&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;[]) {
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;char&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt; buf[&lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;4&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;];
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#b48ead;&quot;&gt;if &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(argc &amp;gt; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;0&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;)           &lt;&#x2F;span&gt;&lt;span style=&quot;color:#65737e;&quot;&gt;&#x2F;&#x2F; lol
+    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;write&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, argv[&lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;0&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;], &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;7&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;); &lt;&#x2F;span&gt;&lt;span style=&quot;color:#65737e;&quot;&gt;&#x2F;&#x2F; .&#x2F;a.out
+
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;write&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;Name: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;7&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;);
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;read&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;0&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, buf, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;4&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;);
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;write&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;hello &lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;6&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;);
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;write&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, buf, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;4&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;);
+  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;write&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;(&lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;1&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;, &amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;!&lt;&#x2F;span&gt;&lt;span style=&quot;color:#96b5b4;&quot;&gt;\n&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;quot;, &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;2&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;);
+}
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;That &lt;code&gt;asm&lt;&#x2F;code&gt; block at the beginning is some initialization code I stole &lt;a href=&quot;https:&#x2F;&#x2F;stackoverflow.com&#x2F;a&#x2F;16722942&quot;&gt;from StackOverflow&lt;&#x2F;a&gt; to replace the stdlib&#x27;s built-in &lt;code&gt;_start&lt;&#x2F;code&gt; function that calls main. Roughly speaking, &lt;code&gt;argc&lt;&#x2F;code&gt; and &lt;code&gt;argv&lt;&#x2F;code&gt; is handed to the program on the stack, which we have to cram into the registers that &lt;code&gt;main&lt;&#x2F;code&gt; expects them in.&lt;&#x2F;p&gt;
+&lt;p&gt;Now it&#x27;s time to compile and run.&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;&quot;&gt;
+&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;$ gcc -nostdlib -fno-stack-protector x.&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;c &lt;&#x2F;span&gt;&lt;span style=&quot;color:#d08770;&quot;&gt;2&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;gt;&#x2F;dev&#x2F;null &amp;amp;&amp;amp; echo &amp;#39;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#a3be8c;&quot;&gt;andrew&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;&amp;#39; | .&#x2F;a.&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;out
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;.&#x2F;a.&lt;&#x2F;span&gt;&lt;span style=&quot;color:#bf616a;&quot;&gt;out
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#c0c5ce;&quot;&gt;Name: hello andr!
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;🙂&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;future-work&quot;&gt;future work&lt;&#x2F;h3&gt;
+&lt;p&gt;I&#x27;ve learnt that programming without the standard library is painful &lt;sup class=&quot;footnote-reference&quot;&gt;&lt;a href=&quot;#6&quot;&gt;6&lt;&#x2F;a&gt;&lt;&#x2F;sup&gt;. Later in the semester, we will build our own minimal vaguely POSIX-compliant libc atop of our syscall wrappers. Watch this space!&lt;&#x2F;p&gt;
+&lt;div class=&quot;footnote-definition&quot; id=&quot;1&quot;&gt;&lt;sup class=&quot;footnote-definition-label&quot;&gt;1&lt;&#x2F;sup&gt;
+&lt;p&gt;... which was the plan, until I didn&#x27;t finish the syscall layer in time.&lt;&#x2F;p&gt;
+&lt;&#x2F;div&gt;
+&lt;div class=&quot;footnote-definition&quot; id=&quot;2&quot;&gt;&lt;sup class=&quot;footnote-definition-label&quot;&gt;2&lt;&#x2F;sup&gt;
+&lt;p&gt;On Linux anyways.&lt;&#x2F;p&gt;
+&lt;&#x2F;div&gt;
+&lt;div class=&quot;footnote-definition&quot; id=&quot;3&quot;&gt;&lt;sup class=&quot;footnote-definition-label&quot;&gt;3&lt;&#x2F;sup&gt;
+&lt;p&gt;&lt;code&gt;syscall6&lt;&#x2F;code&gt;, the wrapper for syscalls with 6 arguments, has 7 arguments in total due to the &lt;code&gt;no&lt;&#x2F;code&gt; argument.&lt;&#x2F;p&gt;
+&lt;&#x2F;div&gt;
+&lt;div class=&quot;footnote-definition&quot; id=&quot;4&quot;&gt;&lt;sup class=&quot;footnote-definition-label&quot;&gt;4&lt;&#x2F;sup&gt;
+&lt;p&gt;You can read all about it by running &lt;code&gt;man man&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;&#x2F;div&gt;
+&lt;div class=&quot;footnote-definition&quot; id=&quot;5&quot;&gt;&lt;sup class=&quot;footnote-definition-label&quot;&gt;5&lt;&#x2F;sup&gt;
+&lt;p&gt;&lt;code&gt;mklibsysc&lt;&#x2F;code&gt; only generates wrappers for syscalls specified in the input, which is why there are only 5 in the list.&lt;&#x2F;p&gt;
+&lt;&#x2F;div&gt;
+&lt;div class=&quot;footnote-definition&quot; id=&quot;6&quot;&gt;&lt;sup class=&quot;footnote-definition-label&quot;&gt;6&lt;&#x2F;sup&gt;
+&lt;p&gt;To be honest though, it&#x27;s not that big of a downgrade when compared to libc.&lt;&#x2F;p&gt;
+&lt;&#x2F;div&gt;
+</content>
+	</entry>
+	<entry xml:lang="en">
+		<title>X570 ITX TB3 heatsink</title>
+		<published>2021-01-05T00:00:00+00:00</published>
+		<updated>2021-01-05T00:00:00+00:00</updated>
+		<link href="https://tny.town/blog/x570-itx-tb3-heatsink/" type="text/html"/>
+		<id>https://tny.town/blog/x570-itx-tb3-heatsink/</id>
+		<content type="html">&lt;p&gt;The default upper MOSFET heatsink on the ASRock X570 ITX TB3 is too big. It&#x27;s unwieldy, blocks airflow, and worst of all, not better at sinking heat when compared to smaller solutions.&lt;&#x2F;p&gt;
+&lt;span id=&quot;continue-reading&quot;&gt;&lt;&#x2F;span&gt;&lt;figure&gt;
+  &lt;img src=&quot;BDD112F5-F7EE-44CE-9F4C-A5A8D8D8D728.jpeg&quot;  alt=&quot;photo of asrock&amp;#x27;s terrible heatsink&quot; &gt;
+  &lt;figcaption&gt;The offending heatsink, laptop keys
+for scale.&lt;&#x2F;figcaption&gt;
+&lt;&#x2F;figure&gt;
+&lt;p&gt;The heatsink is supposed to cover two surfaces on the motherboard — a row of &lt;a href=&quot;https:&#x2F;&#x2F;www.renesas.com&#x2F;us&#x2F;en&#x2F;document&#x2F;dst&#x2F;isl99227-isl99227b-datasheet&quot;&gt;MOSFETs&lt;&#x2F;a&gt;, and a row of chokes. What those &lt;em&gt;do&lt;&#x2F;em&gt; isn&#x27;t particularly important in the context of what we&#x27;re doing: we just need to remember that of the two, the MOSFETs generate more heat for their comparatively smaller size. Sticking some kind of heat dissipating surface on the MOSFETs is necessary, while it&#x27;s less necessary for the chokes.&lt;&#x2F;p&gt;
+&lt;p&gt;Also of interest is the method with which this heatsink is mounted to the board. A screw is threaded through a hole on the board and into a nut affixed to the heatsink. The nut seems to be glued (!!!) onto the heatsink, as opposed to some kind of through hole machined into the surface. &lt;&#x2F;p&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tny.town&#x2F;blog&#x2F;x570-itx-tb3-heatsink&#x2F;80D95EA2-0FC0-4558-BB48-3EA47A685252.jpeg&quot; alt=&quot;A shot of the mounting situation with half of my hand in the frame.&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;the-solution&quot;&gt;the solution&lt;&#x2F;h2&gt;
+&lt;p&gt;With these constraints in mind, I selected a heatsink suitable for the MOSFETs from &lt;a href=&quot;https:&#x2F;&#x2F;smile.amazon.com&#x2F;gp&#x2F;product&#x2F;B077VQTB6Q&#x2F;&quot;&gt;Amazon&lt;&#x2F;a&gt; at the suggestion at the suggestion of &lt;a href=&quot;https:&#x2F;&#x2F;old.reddit.com&#x2F;r&#x2F;sffpc&#x2F;comments&#x2F;daj1rd&#x2F;vrm_heatsink_swap_on_asrock_x570_itxtb3&#x2F;&quot;&gt;this Reddit post&lt;&#x2F;a&gt;. They look like this:&lt;&#x2F;p&gt;
+&lt;figure&gt;
+  &lt;img src=&quot;147FFDD9-4605-47FE-BEB6-061F02C46ABD.jpeg&quot;  alt=&quot;photo of heatsink, laptop keyboard for scale&quot; &gt;
+  &lt;figcaption&gt;Sorry for the terrible photo.&lt;&#x2F;figcaption&gt;
+&lt;&#x2F;figure&gt;
+&lt;p&gt;These heatsinks are around 6.5x6.5x10mm. The base has a lip that I used to secure the heatsink to the motherboard with a part that I designed with SCAD.&lt;&#x2F;p&gt;
+&lt;figure&gt;
+  &lt;img src=&quot;Untitled.png&quot;  alt=&quot;screenshot of OpenSCAD&quot; &gt;
+  &lt;figcaption&gt;Ignore all the duplicate statements
+and magic numbers. It works, I swear!&lt;&#x2F;figcaption&gt;
+&lt;&#x2F;figure&gt;
+&lt;p&gt;The SCAD sources are available &lt;a href=&quot;https:&#x2F;&#x2F;github.com&#x2F;knownunown&#x2F;prints&#x2F;blob&#x2F;main&#x2F;mobo_heatsink.scad&quot;&gt;here&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;results&quot;&gt;results&lt;&#x2F;h2&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tny.town&#x2F;blog&#x2F;x570-itx-tb3-heatsink&#x2F;D4DBFA49-1854-4B44-AB98-68072B910DC7.jpeg&quot; alt=&quot;photo of heatsink mount with cpu out of focus&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tny.town&#x2F;blog&#x2F;x570-itx-tb3-heatsink&#x2F;D98F40A5-D7C8-4B6B-88C9-C3A4705B7657.jpeg&quot; alt=&quot;photo with new and old heatsink mount together&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;Whenever I design a physical part, I always roughly follow this procedure:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Figure out the constraints and roughly approximate how the part &amp;quot;should&amp;quot; look
+&lt;ol&gt;
+&lt;li&gt;Are there any screw holes or distinguishing features? Measure offsets for those and write them down.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;Plug those constraints into SCAD, combine objects and extrudes until it looks right&lt;&#x2F;li&gt;
+&lt;li&gt;Print a copy out, realize that I screwed up the tolerances&lt;&#x2F;li&gt;
+&lt;li&gt;Repeat step 1&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;This part was easier than most — I churned through four or so iterations before I converged on something usable. Its small footprint helped. To be honest, I&#x27;m not entirely sure if the MOSFETs are any warmer or cooler. I wish I had concrete numbers, but it doesn&#x27;t seem like there&#x27;s a way to trivially access the MOSFETs&#x27; onboard temperature sensors. The computer seems to still function and as far as I can tell, the CPU is boosting normally. The motherboard even looks prettier! I&#x27;ll file that under &amp;quot;win&amp;quot;.&lt;&#x2F;p&gt;
+</content>
+	</entry>
+</feed>

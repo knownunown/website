@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://tny.town/sitemap.xml
